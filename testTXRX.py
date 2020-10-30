@@ -5,6 +5,9 @@ from multiprocessing.pool import ThreadPool
 from bladerf import _bladerf
 import matplotlib.pyplot as plt
 
+
+CHANNEL_COUNT = 2
+
 # =============================================================================
 # Search for a bladeRF device attached to the host system
 # Returns a bladeRF device handle.
@@ -41,7 +44,7 @@ def shutdown( error = 0, board = None ):
 
 def receive(device, channel : int, freq : int, rate : int, gain : int,
             tx_start = None, rx_done = None,
-            rxfile : str = '', num_samples : int = 1024):
+            rxfile : str = '', num_samples : int = 2048):
 
     status = 0
 
@@ -86,7 +89,7 @@ def receive(device, channel : int, freq : int, rate : int, gain : int,
     ch2.enable = True
     # Create receive buffer
     bytes_per_sample = 4
-    buf = bytearray(1024*bytes_per_sample)
+    buf = bytearray(2048*bytes_per_sample)
     num_samples_read = 0
 
     # Tell TX thread to begin
@@ -107,34 +110,42 @@ def receive(device, channel : int, freq : int, rate : int, gain : int,
 
 
     # Disable module
-    print( "RX: Stop" )
+    print("RX: Stop")
     ch1.enable = False
     ch2.enable = False
 
-    if( rx_done != None ):
+    if(rx_done != None ):
         rx_done.set()
 
-    for i in range(10):
-        print("buf1[{}]= {}".format(i,buf[i]), end=' ')
+    #for i in range(10):
+    #    print("buf1[{}]= {}".format(i, buf[i]), end=' ')
 
 
     return buf
+
+def deinterleave(buff):
+
+    buff1 = buff[::2]
+    buff2 = buff[1::2]
+
+    
+
 
 uut = probe_bladerf()
 
 if( uut == None ):
     print( "No bladeRFs detected. Exiting." )
-    shutdown( error = -1, board = None )
+    shutdown(error=-1, board=None)
 
-b = _bladerf.BladeRF( uut )
+b = _bladerf.BladeRF(uut)
 
-rx_pool = ThreadPool(processes=2)
+rx_pool = ThreadPool(processes=1)
 
 rx_ch = 0
-rx_freq = 2.4e9
-rx_rate = 61.44e6
+rx_freq = 2.3e9
+rx_rate = 20e6
 rx_gain = 0
-rx_ns = 100e6
+rx_ns = 10e6
 rx_file = ''
 
 buff1 = rx_pool.apply_async(receive,
@@ -164,15 +175,20 @@ rx_ch = 1
 #                              'rxfile'        : rx_file,
 #                              'num_samples'   : rx_ns
 #                            }).get()
-
-
-
 #print(status)
 
+deinterleaved = [buff1[idx::CHANNEL_COUNT] for idx in range(CHANNEL_COUNT)]
 
 
+plt.psd(deinterleaved[0], Fs=rx_rate, Fc=rx_freq, zorder=1, label='Port 1')
 
-plt.psd(buff1, Fs=rx_rate, Fc=rx_freq, zorder=1)
+plt.psd(deinterleaved[1], Fs=rx_rate, Fc=rx_freq, zorder=1, label = 'Port 2')
+
+
+plt.psd(buff1, Fs=rx_rate, Fc=rx_freq, zorder=1, label = 'Both Interleaved')
+
+plt.legend()
+
 plt.show()
 
 
