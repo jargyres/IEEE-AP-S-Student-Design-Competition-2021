@@ -1,0 +1,7 @@
+set frequency rx 2.305G
+set samplerate rx 20M
+set bandwidth rx 20M
+set gain rx1 60
+set gain rx2 60
+rx config file=samp.sc16q11 format=bin n=4096 channel=1,2
+rx start;
