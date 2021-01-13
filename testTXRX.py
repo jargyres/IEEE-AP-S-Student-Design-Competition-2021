@@ -2,200 +2,325 @@ import sys
 import os
 import threading
 from multiprocessing.pool import ThreadPool
-from bladerf import _bladerf
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from matplotlib import style
+import numpy as np
+import csv
+import struct
+import time
+import subprocess
+from subprocess import Popen, PIPE, STDOUT
+from os import path, remove
 
-
-CHANNEL_COUNT = 2
-
-# =============================================================================
-# Search for a bladeRF device attached to the host system
-# Returns a bladeRF device handle.
-# =============================================================================
-def probe_bladerf():
-    device = None
-    print( "Searching for bladeRF devices..." )
-    try:
-        devinfos = _bladerf.get_device_list()
-        if( len(devinfos) == 1 ):
-            device = "{backend}:device={usb_bus}:{usb_addr}".format(**devinfos[0]._asdict())
-            print( "Found bladeRF device: " + str(device) )
-        if( len(devinfos) > 1 ):
-            print( "Unsupported feature: more than one bladeRFs detected." )
-            print( "\n".join([str(devinfo) for devinfo in devinfos]) )
-            shutdown( error = -1, board = None )
-    except _bladerf.BladeRFError:
-        print( "No bladeRF devices found." )
-        pass
-
-    return device
-
-# =============================================================================
-# Close the device and exit
-# =============================================================================
-def shutdown( error = 0, board = None ):
-    print( "Shutting down with error code: " + str(error) )
-    if( board != None ):
-        board.close()
-    sys.exit(error)
-
-
-
-
-def receive(device, channel : int, freq : int, rate : int, gain : int,
-            tx_start = None, rx_done = None,
-            rxfile : str = '', num_samples : int = 2048):
-
-    status = 0
-
-    ch1 = device.Channel(0)
-    ch2 = device.Channel(1)
-
-    ch1.frequency = freq
-    ch2.frequency = freq
-    ch1.sample_rate = rate
-    ch2.sample_rate = rate
-    ch1.gain = gain
-    ch2.gain = gain
-
-
-    if( device == None ):
-        print( "RX: Invalid device handle." )
-        return -1
-
-    if( channel == None ):
-        print( "RX: Invalid channel." )
-        return -1
-
-    # Configure BladeRF
-    #ch             = device.Channel(channel)
-    #ch.frequency   = freq
-    #ch.sample_rate = rate
-    #ch.gain        = gain
-
-    
-
-    # Setup synchronous stream
-    device.sync_config(layout         = _bladerf.ChannelLayout.RX_X2,
-                       fmt            = _bladerf.Format.SC16_Q11,
-                       num_buffers    = 16,
-                       buffer_size    = 8192,
-                       num_transfers  = 8,
-                       stream_timeout = 3500)
-
-    # Enable module
-    print( "RX: Start" )
-    ch1.enable = True
-    ch2.enable = True
-    # Create receive buffer
-    bytes_per_sample = 4
-    buf = bytearray(2048*bytes_per_sample)
-    num_samples_read = 0
-
-    # Tell TX thread to begin
-    if( tx_start != None ):
-        tx_start.set()
-    # Save the samples
+def chunked_read(fobj, chunk_bytes=8 * 1024):
     while True:
-        if num_samples > 0 and num_samples_read == num_samples:
+        data = fobj.read(chunk_bytes)
+        if (not data):
             break
-        elif num_samples > 0:
-            num = min(len(buf)//bytes_per_sample,num_samples-num_samples_read)
         else:
-            num = len(buf)//bytes_per_sample
-        num = int(num)
-            # Read into buffer
-        device.sync_rx(buf, num)
-        num_samples_read += num
+            yield data
+
+def bin2csv(binfile=None, csvfile=None, chunk_bytes=8 * 1024):
+
+    if not path.exists("master.csv"):
+        return
+
+    with open(binfile, 'rb') as b:
+        with open(csvfile, 'w') as c:
+            csvwriter = csv.writer(c, delimiter=',')
+            count = 0
+            for data in chunked_read(b, chunk_bytes=chunk_bytes):
+                count += len(data)
+                for i in range(0, len(data), 8):
+                    sig_i, = struct.unpack('<h', data[i:i + 2])
+                    sig_q, = struct.unpack('<h', data[i + 2:i + 4])
+                    sig_i_port2, = struct.unpack('<h', data[i+4:i + 6])
+                    sig_q_port2, = struct.unpack('<h', data[i+6:i + 8])
+                    csvwriter.writerow([sig_i, sig_q, sig_i_port2, sig_q_port2])
+
+def recieve(process1):
 
 
-    # Disable module
-    print("RX: Stop")
-    ch1.enable = False
-    ch2.enable = False
+    if path.exists("pythonsamp.sc16q11"):
+        remove("pythonsamp.sc16q11")
 
-    if(rx_done != None ):
-        rx_done.set()
+    process1.stdin.write(b"rx start;\n")
 
-    #for i in range(10):
-    #    print("buf1[{}]= {}".format(i, buf[i]), end=' ')
+    print("started")
+
+    while not path.exists("pythonsamp.sc16q11"):
+        pass
+    
+    bin2csv(binfile="pythonsamp.sc16q11", csvfile='csvfile.csv')
+
+    f = open('csvfile.csv', 'r')
+
+    dataComplex_Port1 = np.zeros(2048, dtype=complex)
+    dataComplex_Port2 = np.zeros(2048, dtype=complex)
+
+    n = 0
+
+    # read I, Q - values into memory
+    for line in f:
+        list = line.split(',')  # two values with comma inbetween
+        
+        I_Port1 = int(list[0])
+        Q_Port1 = int(list[1])
+        I_Port2 = int(list[2])
+        Q_Port2 = int(list[3])
+
+        dataComplex_Port1[n] = complex(I_Port1, Q_Port1)
+        dataComplex_Port2[n] = complex(I_Port2, Q_Port2)
+
+        n += 1
+
+    return np.array([dataComplex_Port1, dataComplex_Port2])
 
 
-    return buf
+SAMPLE_RATE = 20e6
 
-def deinterleave(buff):
+NUM_SAMPLES = 2048
 
-    buff1 = buff[::2]
-    buff2 = buff[1::2]
+# bin2csv(binfile="master.sc16q11", csvfile='csvfile1.csv')
+# bin2csv(binfile="slave.sc16q11", csvfile='csvfile2.csv')
 
+# f1 = open('csvfile1.csv', 'r')
+# f2 = open('csvfile2.csv', 'r')
+
+# dataComplex_Port1_1 = np.zeros(2048, dtype=complex)
+# dataComplex_Port2_1 = np.zeros(2048, dtype=complex)
+
+# dataComplex_Port1_2 = np.zeros(2048, dtype=complex)
+# dataComplex_Port2_2 = np.zeros(2048, dtype=complex)
+
+# n = 0
+
+# # read I, Q - values into memory
+# for line in f1:
+#     list = line.split(',')  # two values with comma inbetween
+    
+#     I_Port1 = int(list[0])
+#     Q_Port1 = int(list[1])
+#     I_Port2 = int(list[2])
+#     Q_Port2 = int(list[3])
+
+#     dataComplex_Port1_1[n] = complex(I_Port1, Q_Port1)
+#     dataComplex_Port2_1[n] = complex(I_Port2, Q_Port2)
+
+#     n += 1
+
+# # read I, Q - values into memory
+# for line in f2:
+#     list = line.split(',')  # two values with comma inbetween
+    
+#     I_Port1 = int(list[0])
+#     Q_Port1 = int(list[1])
+#     I_Port2 = int(list[2])
+#     Q_Port2 = int(list[3])
+
+#     dataComplex_Port1_2[n] = complex(I_Port1, Q_Port1)
+#     dataComplex_Port2_2[n] = complex(I_Port2, Q_Port2)
+
+#     n += 1
+
+
+# arr1 = np.array([dataComplex_Port1_1, dataComplex_Port2_1])
+# arr2 = np.array([dataComplex_Port1_2, dataComplex_Port2_2])
+
+
+# return np.array([dataComplex_Port1, dataComplex_Port2])
+
+
+# bin2csv(binfile="pythonsamp.sc16q11", csvfile='csvfile.csv')
+
+
+# f = open('csvfile.csv', 'r')
+
+# dataComplex_Port1 = np.zeros(2048, dtype=complex)
+# dataComplex_Port2 = np.zeros(2048, dtype=complex)
+
+# n = 0
+
+# # read I, Q - values into memory
+# for line in f:
+#     list = line.split(',')  # two values with comma inbetween
+    
+#     I_Port1 = int(list[0])
+#     Q_Port1 = int(list[1])
+#     I_Port2 = int(list[2])
+#     Q_Port2 = int(list[3])
+
+#     dataComplex_Port1[n] = complex(I_Port1, Q_Port1)
+#     dataComplex_Port2[n] = complex(I_Port2, Q_Port2)
+
+#     n += 1
+
+# return np.array([dataComplex_Port1, dataComplex_Port2])
+
+
+# p = Popen(["konsole", "-e", "bladeRF-cli", "-i"], stdin = PIPE)
+
+
+# time.sleep(6)
+
+# p.stdin.write(b"Hello\n")
+
+# print("here")
+
+# arr = recieve(p)
+
+# freq = 5e9
+
+# f = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr1[0]))
+
+# f_carrier = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr1[0])) + (freq)
+
+# data_fft = (20 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(arr1[0]))) / NUM_SAMPLES)) - 20
+
+# carrier_data_1 = [np.transpose(f_carrier), data_fft]
+
+# plt.figure(1)
+
+# plt.plot(f_carrier, label='SDR 1 Port 1')
+
+
+# f = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr1[1]))
+
+# f_carrier = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr1[1])) + (freq)
+
+# data_fft = (20 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(arr1[1]))) / NUM_SAMPLES)) - 20
+
+# carrier_data_2 = [np.transpose(f_carrier), data_fft]
+
+# plt.plot(f_carrier, label='SDR 1 Port 2')
+
+
+# f = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr2[0]))
+
+# f_carrier = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr2[0])) + (freq)
+
+# data_fft = (20 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(arr2[0]))) / NUM_SAMPLES)) - 20
+
+# carrier_data_1 = [np.transpose(f_carrier), data_fft]
+
+# plt.figure(1)
+
+# plt.plot(f_carrier, label='SDR 2 Port 1')
+
+
+# f = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr2[1]))
+
+# f_carrier = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr2[1])) + (freq)
+
+# data_fft = (20 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(arr2[1]))) / NUM_SAMPLES)) - 20
+
+# carrier_data_2 = [np.transpose(f_carrier), data_fft]
+
+# plt.plot(f_carrier, label='SDR 2 Port 2')
+
+
+# plt.legend()
+
+# plt.show()
+
+# f = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr[1]))
+# f_carrier = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr[1])) + (freq)
+# data_fft = (20 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(arr[1]))) / NUM_SAMPLES)) - 20
+# carrier_data = [np.transpose(f_carrier), data_fft]
+
+
+# plt.plot(f_carrier, data_fft, label='Port 2')
+
+
+# plt.xlabel("Frequency (Hz)")
+
+# plt.ylabel("Power (dB)")
+
+# plt.legend()
+
+# plt.show()
+
+
+
+# for i in range(20):
+
+#     print(i)
+
+
+#     arr = recieve(p)
+#     f = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr[0]))
+#     f_carrier = np.linspace(-0.5 * SAMPLE_RATE, 0.5 * SAMPLE_RATE, len(arr[0])) + (freq)
+#     data_fft = (20 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(arr[0]))) / NUM_SAMPLES)) - 20
+#     carrier_data = [np.transpose(f_carrier), data_fft]
+
+#     plt.plot(f_carrier, data_fft)
+
+#     plt.draw()
+
+#     plt.pause(0.01)
     
 
+# p.stdin.write(b"q\n")
 
-uut = probe_bladerf()
+# p.stdin.close()
 
-if( uut == None ):
-    print( "No bladeRFs detected. Exiting." )
-    shutdown(error=-1, board=None)
-
-b = _bladerf.BladeRF(uut)
-
-rx_pool = ThreadPool(processes=1)
-
-rx_ch = 0
-rx_freq = 2.3e9
-rx_rate = 20e6
-rx_gain = 0
-rx_ns = 10e6
-rx_file = ''
-
-buff1 = rx_pool.apply_async(receive,
-                            (),
-                            { 'device'        : b,
-                              'channel'       : rx_ch,
-                              'freq'          : rx_freq,
-                              'rate'          : rx_rate,
-                              'gain'          : rx_gain,
-                              'tx_start'      : None,
-                              'rx_done'       : None,
-                              'rxfile'        : rx_file,
-                              'num_samples'   : rx_ns
-                            }).get()
-
-rx_ch = 1
-
-#buff2 = rx_pool.apply_async(receive,
-#                            (),
-#                            { 'device'        : b,
-#                              'channel'       : rx_ch,
-#                              'freq'          : rx_freq,
-#                              'rate'          : rx_rate,
-#                              'gain'          : rx_gain,
-#                              'tx_start'      : None,
-#                              'rx_done'       : None,
-#                              'rxfile'        : rx_file,
-#                              'num_samples'   : rx_ns
-#                            }).get()
-#print(status)
-
-deinterleaved = [buff1[idx::CHANNEL_COUNT] for idx in range(CHANNEL_COUNT)]
+# print("Closing BladeRF Devices")
+# p.wait()
 
 
-plt.psd(deinterleaved[0], Fs=rx_rate, Fc=rx_freq, zorder=1, label='Port 1')
 
-plt.psd(deinterleaved[1], Fs=rx_rate, Fc=rx_freq, zorder=1, label = 'Port 2')
+# master = subprocess.Popen(['bladeRF-cli', '-d', '*:serial=35d', '-i'], stdin=subprocess.PIPE)
+# slave = subprocess.Popen(["bladeRF-cli -d \"*:serial=cbd\" -i"], stdin=subprocess.PIPE, stdout = subprocess.PIPE, shell=True)
 
 
-plt.psd(buff1, Fs=rx_rate, Fc=rx_freq, zorder=1, label = 'Both Interleaved')
 
-plt.legend()
 
-plt.show()
+# read_with_timeout(master.stdout)
+
+# time.sleep(3)
+
+# print("Opened BladeRF")
+
+# master.stdin.write(b"rx config file=master.csv format=csv n=2048 channel=1,2 timeout=60s\n")
+
+# time.sleep(3)
+
+# # print("Sent Rx config")
+
+
+# master.stdin.write(b"rx start\n")
+
+# print("Sent Rx start")
+
+# time.sleep(3)
 
 
 
 
 
-print("DONE")
+# while not path.exists("master.csv"):
+#     pass
 
 
 
+# print("Got file, Exiting From BladeRF")
+
+
+# print("Closing BladeRF")
+# time.sleep(3)
+# master.stdin.write(b"info\n")
+# time.sleep(2)
+# master.stdin.write(b"q\n")
+# time.sleep(2)
+
+
+from bladeRFControl import bladeRFControl
+
+b = bladeRFControl()
+
+b.PrepareReceive()
+
+b.recieve()
+
+b.closeDevices()
