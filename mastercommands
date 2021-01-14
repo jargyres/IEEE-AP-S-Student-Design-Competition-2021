@@ -3,4 +3,4 @@ set samplerate rx 6M
 set clock_out enable
 trigger j51-1 tx master
 trigger j51-1 rx slave
-rx config file=master.csv format=csv n=2048 channel=1,2 timeout=60s
+rx config file=master.csv format=csv n=1024 channel=1,2 timeout=60s

@@ -10,14 +10,14 @@ class bladeRFControl:
     def __init__(self):
 
         #the device with 35d must be the master becuause the clkout on "35d" is connected to clkin on "cbd"
-        self.master_process = Popen(['bladeRF-cli', '-d', '*:serial=35d','-s','mastercommands', '-i'], stdin=PIPE)
+        self.master_process = Popen(['bladeRF-cli', '-d', '*:serial=35d','-s','mastercommands', '-i'], stdin=PIPE, stdout=PIPE)
 
         print("Master Opened")
         #give it some time to open the device and load the commands
         #we need to wait because we can't set the external clock on the slave until the master is already outputting a clock signal
         time.sleep(4)
 
-        self.slave_process = Popen(['bladeRF-cli', '-d', '*:serial=cbd', '-s', 'slavecommands', '-i'], stdin=PIPE)
+        self.slave_process = Popen(['bladeRF-cli', '-d', '*:serial=cbd', '-s', 'slavecommands', '-i'], stdin=PIPE, stdout=PIPE)
 
         print("Slave Opened")
         # same thing, give it some time to open and load commands
@@ -55,8 +55,6 @@ class bladeRFControl:
 
         if waitTime != 0:
             time.sleep(waitTime)
-            
-        
 
     def printBladeRFCommand(self, command, device):
 
@@ -85,3 +83,11 @@ class bladeRFControl:
         self.sendBladeRFCommand("q", "slave")
 
         print("Closed Devices Successfully")
+
+b = bladeRFControl()
+
+b.PrepareReceive()
+
+b.recieve()
+
+b.closeDevices()
