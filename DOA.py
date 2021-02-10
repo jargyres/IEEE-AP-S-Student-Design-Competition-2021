@@ -22,8 +22,8 @@ Next Steps:
 import numpy as np
 from numpy.lib import scimath as SM
 from numpy import linalg as LA
-import datas_s
-import b_data
+import pandas as pd
+#import readcsv
 #import base
 
 class DOA():
@@ -32,7 +32,7 @@ class DOA():
 	#		separation_d = 0.5, 
 	#		noise_v = 0.4
 	#		angle_stp = .1
-	def __init__(self,number_e = 4, number_s = 1024, 
+	def __init__(self,number_e = 2, number_s = 1024, 
 					separation_d = 0.5, noise_v = 0.4, angle_stp = .1):
 		super().__init__()
 		
@@ -57,7 +57,7 @@ class DOA():
 # 3-4		format 1
 # 4-512		format 2
 # all else defaults to 1024	format 1
-	def data_set(self, t = 1):
+	def data_set(self, t = 5, filename = None):
 		
 		if t == 1:
 			self.data_s = datas_s.data_U #1024 snapshots
@@ -79,6 +79,22 @@ class DOA():
 			self.format_s = 2
 			
 			
+		elif t == 5:
+			A = pd.read_csv(filename,index_col=False,header=None,engine='c')
+			A = A.to_numpy()
+			A = np.reshape(A,(512,4))
+			b_data = np.array([[0,0]])
+			for row in A:
+				temp1 = row[0]+(row[1])*1j
+				temp2 = row[2]+(row[3])*1j
+				temp_array = np.array([[temp1,temp2]])
+				b_data = np.concatenate((b_data, temp_array))
+
+			A = np.matrix(np.delete(b_data,0,0))
+	
+			self.data_s = A
+			self.format_s = 2
+				
 		else:
 			self.data_s = datas_s.data_U #1024 snapshots
 			self.format_s = 1
