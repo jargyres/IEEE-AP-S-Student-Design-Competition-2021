@@ -48,6 +48,31 @@ class DOA():
 		self.complete_response = self.steering(self.angles);
 		self.number_signals = len(self.angles)	
 	
+	#set_data(array data)
+	#set the data_s to formatted data
+	#formats data array from single n array to 4x(n/8)
+	def set_data(self, data):
+		
+		if ((len(data)%self.number_elements) != 0):
+			print ("not a good size must be divisable by number_elements")
+		else:
+			chan_Buf_len = int(len(data)/self.number_elements)
+			b_data = np.array([[0,0,0,0]])
+			for i in range(0,chan_Buf_len-1,2):
+				temp1 = data[i]+(data[i+1])*1j
+				temp2 = data[i+256]+(data[i+257])*1j
+				temp3 = data[i+512]+(data[i+513])*1j
+				temp4 = data[i+768]+(data[i+769])*1j
+				temp_array = np.array([[temp1,temp2,temp3,temp4]])
+				b_data = np.concatenate((b_data, temp_array))
+
+			A = np.matrix(np.delete(b_data,0,0))
+			
+			self.data_s = A
+			self.format_s = 2
+
+		
+
 		
 	#data_set(int t)
 #set which data set is going to be used
