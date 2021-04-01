@@ -4,8 +4,8 @@ FileName: DOA.py
 created : Jan 17, 2021 
 
 last edit : 
-	date: Jan 17, 2021
-	reason: creation
+	date: Apr 1, 2021
+	reason: added new method to format data from buffer
 				
 lasteditor:
 	William Wagner
